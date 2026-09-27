@@ -16,9 +16,13 @@ limitations under the License.
 -->
 
 <mujoco model="openarm">
+  <!-- 1. Reducir el timestep y mejorar el integrador para control por torque -->
+  <option timestep="0.001" integrator="RK4"/>
   <default>
     <!-- <geom friction="0.0001" margin="0.0005" /> -->
-    <joint stiffness="0" ref="0.0" />
+    
+    <!-- 2. Añadir 'armature' para simular la inercia del motor y evitar vibraciones instantáneas -->
+    <joint stiffness="0" ref="0.0" armature="0.01"/>
     <default class="robot">
       <default class="motor_DM8009">
         <joint frictionloss="0.1" damping="0.4" limited="true" type="hinge" />
