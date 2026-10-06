@@ -1,0 +1,113 @@
+<mujocoinclude>
+	<body name="right_tower" quat="1.0 0.0 0.0 0.0">
+		<body name="right_ForeArmStructure-Model_e18f2368" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+			<geom type="mesh" mesh="right_ForeArmStructure-Model_Logo" material="white" group="1" contype="0" conaffinity="0" />
+			<geom type="mesh" mesh="right_ForeArmStructure-Model" material="black" group="1" />
+
+			<body name="right_TopTower-Model_4a80d30e" pos="-0.010 0.0523 0.0" quat="-0.5 0.5 -0.5 -0.5">
+				<geom type="mesh" mesh="right_TopTower-Model" material="black" group="1" />
+
+				<body name="right_R-Carpals_8d1f1041" pos="-0.001877 0.0050 0.0895" quat="-0.7071 0.0 0.0 0.7071">
+					<joint name="right_wrist" pos="0.005 0.001877 -0.0495" axis="-1 0 0" range="-1.1344 0.6108" ref="0.0" />
+					<geom type="mesh" mesh="right_R-Carpals" material="black" group="1" />
+
+					<!-- PULGAR -->
+					<body name="right_T-TP-R_1c2b802d" pos="-0.021213 0.014332 -0.021724" quat="0.6591 0.3595 -0.0724 -0.6565">
+						<joint name="right_t-cmc" pos="0 0 0.00385" axis="0 0 -1" range="-0.7853 0.5759" ref="0.0" />
+						<geom type="mesh" mesh="right_T-TP-R" material="black" group="1" />
+
+						<body name="right_R-T-AP_a9723101" pos="-0.036 0.0 0.0" quat="0.8191 -0.5735 0.0 0.0">
+							<joint name="right_t-abd" pos="0.028 0 0" axis="0 0.342 0.9396" range="-0.3141 0.9599" ref="0.0" />
+							<geom type="mesh" mesh="right_R-T-AP" material="black" group="1" />
+
+							<body name="right_T-PP_68395e98" pos="0.0 0.0 0.0" quat="0.0 0.7071 0.0 -0.7071">
+								<joint name="right_t-mcp" pos="0 0 0" axis="0 -1 0" range="-0.4363 1.7453" ref="0.0" />
+								<geom type="mesh" mesh="right_T-PP_Skin" material="white" group="1" contype="0" conaffinity="0" />
+								<geom type="mesh" mesh="right_T-PP_PP" material="black" group="1" />
+
+								<body name="right_T-DP_b7429e50" pos="0.001 0.0 0.032" quat="1.0 0.0 0.0 0.0">
+									<joint name="right_t-pip" pos="0 0 0" axis="0 -1 0" range="-0.2617 1.8675" ref="0.0" />
+									<geom type="mesh" mesh="right_T-DP_Skin" material="white" group="1" contype="0" conaffinity="0" />
+									<geom type="mesh" mesh="right_T-DP_T-DP" material="black" group="1" />
+								</body>
+							</body>
+						</body>
+					</body>
+
+					<!-- ÍNDICE -->
+					<body name="right_I-AP-R_d95d02d1" pos="-0.025575 0.00068 0.038357" quat="0.5196 0.5667 0.4317 -0.4715">
+						<joint name="right_i-abd" pos="0.01875 0 0.001" axis="0 0 1" range="-0.4363 0.5235" ref="0.0" />
+						<geom type="mesh" mesh="right_I-AP-R" material="black" group="1" />
+
+						<body name="right_I-PP_bacbd481" pos="-0.0004 0 0" quat="0.7071 0 -0.7071 0">
+							<joint name="right_i-mcp" pos="0 0 0" axis="0 -1 0" range="-0.4363 1.7453" ref="0.0" />
+							<geom type="mesh" mesh="right_I-PP_Skin" material="white" group="1" contype="0" conaffinity="0" />
+							<geom type="mesh" mesh="right_I-PP_PP" material="black" group="1" />
+
+							<body name="right_I-FingerTipAssembly_ec49c16c" pos="0.0015 0 0.037" quat="1 0 0 0">
+								<joint name="right_i-pip" pos="0 0 0" axis="0 -1 0" range="-0.2617 1.8675" ref="0.0" />
+								<geom type="mesh" mesh="right_I-IP_IP" material="black" group="1" />
+								<geom type="mesh" mesh="right_I-FingerTipAssembly_I-DP-Skin" material="white" group="1" contype="0" conaffinity="0" />
+							</body>
+						</body>
+					</body>
+
+					<!-- MEDIO -->
+					<body name="right_M-AP_e04a96f2" pos="-0.000756 -0.001146 0.048251" quat="-0.5006 -0.5006 -0.4993 0.4993">
+						<joint name="right_m-abd" pos="0.01925 0 0.001" axis="0 0 1" range="-0.4712 0.4712" ref="0.0" />
+						<geom type="mesh" mesh="right_M-AP" material="black" group="1" />
+
+						<body name="right_M-PP_08efa608" pos="-0.000616 0 0" quat="-0.7071 0 0.7071 0">
+							<joint name="right_m-mcp" pos="0 0 0" axis="0 -1 0" range="-0.4363 1.7453" ref="0.0" />
+							<geom type="mesh" mesh="right_M-PP_Skin" material="white" group="1" contype="0" conaffinity="0" />
+							<geom type="mesh" mesh="right_M-PP_PP" material="black" group="1" />
+
+							<body name="right_M-FingerTipAssembly_34afb748" pos="0.002 0 0.04" quat="1 0 0 0">
+								<joint name="right_m-pip" pos="0 0 0" axis="0 -1 0" range="-0.2617 1.8675" ref="0.0" />
+								<geom type="mesh" mesh="right_M-FingerTipAssembly_M-DP-Skin" material="white" group="1" contype="0" conaffinity="0" />
+								<geom type="mesh" mesh="right_M-IP_IP" material="black" group="1" />
+							</body>
+						</body>
+					</body>
+
+					<!-- ANULAR -->
+					<body name="right_M-AP_6ec59111" pos="0.023005 -0.000101 0.04085" quat="-0.4851 -0.4384 -0.5547 0.5144">
+						<joint name="right_r-abd" pos="0.01925 0 0.001" axis="0 0 1" range="-0.4712 0.4712" ref="0.0" />
+						<geom type="mesh" mesh="right_M-AP" material="black" group="1" />
+
+						<body name="right_M-PP_8660a1eb" pos="-0.000616 0 0" quat="-0.7071 0 0.7071 0">
+							<joint name="right_r-mcp" pos="0 0 0" axis="0 -1 0" range="-0.4363 1.7453" ref="0.0" />
+							<geom type="mesh" mesh="right_M-PP_Skin" material="white" group="1" contype="0" conaffinity="0" />
+							<geom type="mesh" mesh="right_M-PP_PP" material="black" group="1" />
+
+							<body name="right_M-FingerTipAssembly_424a8e75" pos="0.002 0 0.04" quat="1 0 0 0">
+								<joint name="right_r-pip" pos="0 0 0" axis="0 -1 0" range="-0.2617 1.8675" ref="0.0" />
+								<geom type="mesh" mesh="right_M-FingerTipAssembly_M-DP-Skin" material="white" group="1" contype="0" conaffinity="0" />
+								<geom type="mesh" mesh="right_M-IP_IP" material="black" group="1" />
+							</body>
+						</body>
+					</body>
+
+					<!-- MEÑIQUE -->
+					<body name="right_P-AP_f5e42b61" pos="0.046668 0.005 0.029101" quat="-0.4573 -0.3401 -0.6138 0.5461">
+						<joint name="right_p-abd" pos="0.01775 0 0.001" axis="0 0 1" range="-0.5235 0.5235" ref="0.0" />
+						<geom type="mesh" mesh="right_P-AP" material="black" group="1" />
+
+						<body name="right_P-PP_1d411b9b" pos="0 0 0" quat="-0.7071 0 0.7071 0">
+							<joint name="right_p-mcp" pos="0 0 0" axis="0 -1 0" range="-0.4363 1.7453" ref="0.0" />
+							<geom type="mesh" mesh="right_P-PP_Skin" material="white" group="1" contype="0" conaffinity="0" />
+							<geom type="mesh" mesh="right_P-PP_PP" material="black" group="1" />
+
+							<body name="right_P-FingerTipAssembly_cd219176" pos="0.001 0 0.031" quat="1 0 0 0">
+								<joint name="right_p-pip" pos="0 0 0" axis="0 -1 0" range="-0.2617 1.8675" ref="0.0" />
+								<geom type="mesh" mesh="right_P-IP_IP" material="black" group="1" />
+								<geom type="mesh" mesh="right_P-FingerTipAssembly_P-DP-Skin" material="white" group="1" contype="0" conaffinity="0" />
+							</body>
+						</body>
+					</body>
+
+				</body>
+			</body>
+		</body>
+	</body>
+</mujocoinclude>

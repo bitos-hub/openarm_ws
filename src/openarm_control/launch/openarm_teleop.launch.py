@@ -10,7 +10,7 @@ def generate_launch_description():
     control_pkg = get_package_share_directory('openarm_control')
 
     # Ruta al archivo URDF (basada en tu estructura del workspace)
-    urdf_file = os.path.expanduser('~/openarm_ws/src/openarm_description/assets/robot/openarm_v1.0/urdf/example/v1.urdf')
+    urdf_file = os.path.expanduser('~/openarm_ws/src/openarm_description/assets/robot/openarm_v1.0/urdf/example/v1_edited.urdf')
     
     # Ruta al archivo de configuración de RViz que contiene el RobotModel y los InteractiveMarkers
     rviz_config_file = os.path.join(desc_pkg, 'rviz', 'openarm_teleop.rviz')

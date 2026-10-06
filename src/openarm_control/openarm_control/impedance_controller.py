@@ -12,17 +12,21 @@ class PinocchioImpedanceController:
         self.tcp_offset = np.zeros(3)
 
         # Rigidez local calibrada para sostener la masa del brazo
-        self.Kp_trans_local = np.diag([120.0, 120.0, 120.0])
-        self.Kd_trans_local = np.diag([50.0, 50.0, 50.0])
+        self.Kp_trans_left = np.diag([250.0, 250.0, 250.0])
+        self.Kd_trans_left = np.diag([14.0, 14.0, 14.0])
+        self.Kp_rot_left = np.diag([35.0, 35.0, 35.0])
+        self.Kd_rot_left = np.diag([4.0, 4.0, 4.0])
 
-        self.Kp_rot_local = np.diag([40.0, 40.0, 40.0])
-        self.Kd_rot_local = np.diag([20.0, 20.0, 20.0])
+        self.Kp_trans_right = np.diag([480.0, 480.0, 480.0])
+        self.Kd_trans_right = np.diag([22.0, 22.0, 22.0])
+        self.Kp_rot_right = np.diag([65.0, 65.0, 65.0])
+        self.Kd_rot_right = np.diag([8.0, 8.0, 8.0])
 
         # Obtención precisa de índices de velocidad en Pinocchio
         self.left_arm_v_ids = [self.model.joints[self.model.getJointId(f"openarm_left_joint{i}")].idx_v for i in range(1, 8)]
         self.right_arm_v_ids = [self.model.joints[self.model.getJointId(f"openarm_right_joint{i}")].idx_v for i in range(1, 8)]
 
-    def compute_arm_torque(self, q_pin, dq_pin, frame_id, arm_v_ids, pos_d, vel_d, R_d, q_nominal=None):
+    def compute_arm_torque(self, q_pin, dq_pin, frame_id, arm_v_ids, pos_d, vel_d, R_d, q_nominal=None, is_right_arm=True):
         pin.forwardKinematics(self.model, self.data, q_pin, dq_pin)
         pin.updateFramePlacements(self.model, self.data)
 
@@ -38,6 +42,17 @@ class PinocchioImpedanceController:
             self.model, self.data, q_pin, frame_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
         )
         J = J_full[:, arm_v_ids]  # 6x7
+
+        if is_right_arm:
+            Kp_trans = self.Kp_trans_right
+            Kd_trans = self.Kd_trans_right
+            Kp_rot = self.Kp_rot_right
+            Kd_rot = self.Kd_rot_right
+        else:
+            Kp_trans = self.Kp_trans_left
+            Kd_trans = self.Kd_trans_left
+            Kp_rot = self.Kp_rot_left
+            Kd_rot = self.Kd_rot_left
 
         # --- 1. ERRORES EN MARCO LOCAL DE LA HERRAMIENTA ---
         e_pos_local = R.T @ (pos_d - pos)
@@ -56,9 +71,8 @@ class PinocchioImpedanceController:
         e_w_local = -w_local
 
         # --- 2. FUERZAS DE IMPEDANCIA LOCAL (Control PD) ---
-        F_trans_local = self.Kp_trans_local @ e_pos_local + self.Kd_trans_local @ e_v_local
-                         
-        F_rot_local = self.Kp_rot_local @ e_rot_local + self.Kd_rot_local @ e_w_local
+        F_trans_local = Kp_trans @ e_pos_local + Kd_trans @ e_v_local
+        F_rot_local = Kp_rot @ e_rot_local + Kd_rot @ e_w_local
 
         F_6d_world = np.hstack([R @ F_trans_local, R @ F_rot_local])
         tau_task = J.T @ F_6d_world
@@ -73,8 +87,8 @@ class PinocchioImpedanceController:
             q_nominal = q_arm
 
         # Rigidez/Amortiguamiento articular secundario para eliminar la oscilación interna
-        Kp_null = 1.0
-        Kd_null = 0.5
+        Kp_null = 2.0 if is_right_arm else 1.0
+        Kd_null = 0.8 if is_right_arm else 0.5
         tau_null_raw = Kp_null * (q_nominal - q_arm) - Kd_null * dq_arm
 
         tau_null = N @ tau_null_raw
