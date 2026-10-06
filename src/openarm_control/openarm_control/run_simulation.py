@@ -7,7 +7,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
-from scipy.spatial.transform import Rotation as R_scipy
+from scipy.spatial.transform import Rotation as R_scipy, Slerp
 
 from openarm_control.impedance_controller import PinocchioImpedanceController
 from openarm_control.robot_interface import MujocoRobotInterface
@@ -20,6 +20,28 @@ MOTOR_LIMITS = {
 }
 
 ARM_MOTOR_TYPES = ['DM8009', 'DM8009', 'DM4340', 'DM4340', 'DM4310', 'DM4310', 'DM4310']
+TORQUE_LIMITS = np.array([40.0, 40.0, 27.0, 27.0, 7.0, 7.0, 7.0])
+
+# Límites articulares de posición (en radianes) extraídos del URDF/XML
+JOINT_LIMITS_LEFT = [
+    (-3.490659, 1.396263),   # Joint 1
+    (-3.316125, 0.174533),   # Joint 2
+    (-1.570796, 1.570796),   # Joint 3
+    (0.0, 2.443461),         # Joint 4
+    (-1.570796, 1.570796),   # Joint 5
+    (-0.785398, 0.785398),   # Joint 6
+    (-1.570796, 1.570796)    # Joint 7
+]
+
+JOINT_LIMITS_RIGHT = [
+    (-1.396263, 3.490659),   # Joint 1
+    (-0.174533, 3.316125),   # Joint 2
+    (-1.570796, 1.570796),   # Joint 3
+    (0.0, 2.443461),         # Joint 4
+    (-1.570796, 1.570796),   # Joint 5
+    (-0.785398, 0.785398),   # Joint 6
+    (-1.570796, 1.570796)    # Joint 7
+]
 
 class RVizBridgeNode(Node):
     def __init__(self):
@@ -32,14 +54,23 @@ class RVizBridgeNode(Node):
         self.pub_curr_r = self.create_publisher(PoseStamped, '/openarm/right/current_pose', 10)
 
         # Topics para iti monitoring ti torques
-        self.pub_torques_l = self.create_publisher(Float64MultiArray, '/openarm/left/joint_torques', 10)
-        self.pub_torques_r = self.create_publisher(Float64MultiArray, '/openarm/right/joint_torques', 10)
+        self.pub_torques_l = self.create_publisher(Float64MultiArray, '/openarm/left/joint_torques', 1)
+        self.pub_torques_r = self.create_publisher(Float64MultiArray, '/openarm/right/joint_torques', 1)
 
         self.create_subscription(PoseStamped, '/openarm/left/target_pose', self._cb_left, 10)
         self.create_subscription(PoseStamped, '/openarm/right/target_pose', self._cb_right, 10)
 
-    def _cb_left(self, msg): self.left_pose = msg.pose
-    def _cb_right(self, msg): self.right_pose = msg.pose
+    def _cb_left(self, msg):
+        self.left_pose = msg.pose
+        self.on_marker_pose_updated('left', msg.pose)
+
+    def _cb_right(self, msg):
+        self.right_pose = msg.pose
+        self.on_marker_pose_updated('right', msg.pose)
+
+    def on_marker_pose_updated(self, arm_side, pose):
+        """Callback invocado inmediatamente cuando llega una nueva pose de marker/topic."""
+        self.get_logger().debug(f"Nueva pose objetivo recibida para brazo {arm_side}: {pose.position}")
 
     def publish_torques(self, tau_l, tau_r):
         msg_l = Float64MultiArray()
@@ -126,10 +157,15 @@ def main():
     q_grip_left_d, q_grip_right_d = None, None
     q_nominal_left, q_nominal_right = None, None
 
-    act_lf1 = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_finger1_ctrl")
-    act_lf2 = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_finger2_ctrl")
-
     all_joint_names = [controller.model.names[i] for i in range(1, len(controller.model.joints))]
+
+    # Factor de suavizado EMA (0.2 = respuesta instantánea sin temblor de ratón)
+    alpha_pos = 0.25
+    alpha_rot = 0.25
+
+    # Poses filtradas que alimentan directamente al controlador
+    pos_d_l, R_d_l = None, None
+    pos_d_r, R_d_r = None, None
     
     try:
         while robot.is_running():
@@ -149,62 +185,79 @@ def main():
             pin.forwardKinematics(controller.model, controller.data, q_pin, dq_pin)
             pin.updateFramePlacements(controller.model, controller.data)
 
-            if pos_init_l is None:
+            # Inicialización en la pose actual de la mano
+            if pos_d_l is None:
                 H_l = controller.data.oMf[controller.left_ee_id]
-                pos_init_l = H_l.translation.copy()
-                R_init_l = H_l.rotation.copy()
+                pos_d_l = H_l.translation.copy()
+                R_d_l = H_l.rotation.copy()
 
                 H_r = controller.data.oMf[controller.right_ee_id]
-                pos_init_r = H_r.translation.copy()
-                R_init_r = H_r.rotation.copy()
+                pos_d_r = H_r.translation.copy()
+                R_d_r = H_r.rotation.copy()
 
-            if q_nominal_left is None:
-                q_nominal_left = robot.data.qpos[0:7].copy()
-                q_nominal_right = robot.data.qpos[9:16].copy()
-
+            # Lectura del marcador con filtro EMA (Exponencial)
             if node.left_pose is not None:
-                pos_init_l = np.array([node.left_pose.position.x, node.left_pose.position.y, node.left_pose.position.z])
-                q = node.left_pose.orientation
-                R_init_l = R_scipy.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+                target_p = np.array([node.left_pose.position.x, node.left_pose.position.y, node.left_pose.position.z])
+                q_l = node.left_pose.orientation
+                
+                # 1. Posición filtrada EMA
+                pos_d_l = alpha_pos * target_p + (1.0 - alpha_pos) * pos_d_l
+
+                # 2. Cuaternión actual y cuaternión objetivo [x, y, z, w]
+                q_curr = R_scipy.from_matrix(R_d_l).as_quat()
+                q_targ = np.array([q_l.x, q_l.y, q_l.z, q_l.w])
+
+                # Invertir el cuaternión si el producto punto es negativo para tomar el camino más corto
+                if np.dot(q_curr, q_targ) < 0.0:
+                    q_targ = -q_targ
+
+                rot_curr = R_scipy.from_quat(q_curr)
+                rot_targ = R_scipy.from_quat(q_targ)
+
+                slerp = Slerp([0.0, 1.0], R_scipy.from_quat(np.vstack([q_curr, q_targ])))
+                R_d_l = slerp([alpha_rot])[0].as_matrix()
 
             if node.right_pose is not None:
-                pos_init_r = np.array([node.right_pose.position.x, node.right_pose.position.y, node.right_pose.position.z])
-                q = node.right_pose.orientation
-                R_init_r = R_scipy.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+                target_p = np.array([node.right_pose.position.x, node.right_pose.position.y, node.right_pose.position.z])
+                q_r = node.right_pose.orientation
+                
+                # 1. Posición filtrada EMA
+                pos_d_r = alpha_pos * target_p + (1.0 - alpha_pos) * pos_d_r
 
+                # 2. Cuaternión actual y cuaternión objetivo [x, y, z, w]
+                q_curr = R_scipy.from_matrix(R_d_r).as_quat()
+                q_targ = np.array([q_r.x, q_r.y, q_r.z, q_r.w])
+
+                # Invertir el cuaternión si el producto punto es negativo para tomar el camino más corto
+                if np.dot(q_curr, q_targ) < 0.0:
+                    q_targ = -q_targ
+
+                rot_curr = R_scipy.from_quat(q_curr)
+                rot_targ = R_scipy.from_quat(q_targ)
+
+                slerp = Slerp([0.0, 1.0], R_scipy.from_quat(np.vstack([q_curr, q_targ])))
+                R_d_r = slerp([alpha_rot])[0].as_matrix()
+
+            # Espacio nulo adaptativo: q_nominal sigue a las articulaciones actuales
+            # para no generar torques parásitos de retorno
+            q_arm_l_curr = q_pin[controller.left_arm_v_ids]
+            q_arm_r_curr = q_pin[controller.right_arm_v_ids]
+
+            # Calcular torques completos (Impedancia + Espacio Nulo + Gravedad)
             tau_l = controller.compute_arm_torque(
                 q_pin, dq_pin, controller.left_ee_id, controller.left_arm_v_ids,
-                pos_init_l, np.zeros(3), R_init_l, q_nominal=q_nominal_left, is_right_arm=False
+                pos_d_l, np.zeros(3), R_d_l, q_nominal=q_arm_l_curr, is_right_arm=False, include_gravity=True
             )
             tau_r = controller.compute_arm_torque(
                 q_pin, dq_pin, controller.right_ee_id, controller.right_arm_v_ids,
-                pos_init_r, np.zeros(3), R_init_r, q_nominal=q_nominal_right, is_right_arm=True
+                pos_d_r, np.zeros(3), R_d_r, q_nominal=q_arm_r_curr, is_right_arm=True, include_gravity=True
             )
-            
-            tau_dyn = controller.compute_nonlinear_effects(q_pin, dq_pin)
 
-            # Construir el diccionario de torques para MuJoCo
-            cmd_dict = {}
+            # Saturar directamente por los límites físicos reales de cada motor
+            tau_l_clamped = np.clip(tau_l, -TORQUE_LIMITS, TORQUE_LIMITS)
+            tau_r_clamped = np.clip(tau_r, -TORQUE_LIMITS, TORQUE_LIMITS)
 
-            # Límites físicos por articulación (Brazo de 7 DOF)
-            TORQUE_LIMITS = np.array([40.0, 40.0, 27.0, 27.0, 7.0, 7.0, 7.0])
-
-            # Dentro del bucle while, al calcular tau_l y tau_r:
-            tau_l_total = tau_l + tau_dyn[controller.left_arm_v_ids]
-            tau_r_total = tau_r + tau_dyn[controller.right_arm_v_ids]
-
-            # 1. Saturar torques al máximo físico real
-            tau_l_clamped = np.clip(tau_l_total, -TORQUE_LIMITS, TORQUE_LIMITS)
-            tau_r_clamped = np.clip(tau_r_total, -TORQUE_LIMITS, TORQUE_LIMITS)
-
-            # 2. Rampa de arranque suave (Aumenta progresivamente de 0 a 1 en 1 segundo)
-            sim_time = robot.get_time()
-            ramp_factor = min(1.0, sim_time / 1.0)
-
-            tau_l_clamped *= ramp_factor
-            tau_r_clamped *= ramp_factor
-
-            # 3. Asignar los torques finales a cmd_dict
+            # 6. Asignar los torques finales a cmd_dict
             cmd_dict = {}
             for idx, act_id in enumerate(robot.left_act_ids):
                 if act_id is not None:
@@ -225,13 +278,9 @@ def main():
 
             node.publish_torques(tau_l_clamped, tau_r_clamped)
 
-            q_list = []
-            for i in range(1, len(controller.model.joints)):
-                idx_q = controller.model.joints[i].idx_q
-                q_list.append(float(q_pin[idx_q]))
-
+            q_list = [float(q_pin[controller.model.joints[i].idx_q]) for i in range(1, len(controller.model.joints))]
             q_arm_vals = np.array(q_list, dtype=np.float64)
-            node.publish_states(pos_init_l, R_init_l, pos_init_r, R_init_r, all_joint_names, q_arm_vals)
+            node.publish_states(pos_d_l, R_d_l, pos_d_r, R_d_r, all_joint_names, q_arm_vals)
     finally:
         robot.close()
         rclpy.shutdown()

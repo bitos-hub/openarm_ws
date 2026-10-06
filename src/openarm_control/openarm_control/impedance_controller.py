@@ -11,22 +11,29 @@ class PinocchioImpedanceController:
 
         self.tcp_offset = np.zeros(3)
 
-        # Rigidez local calibrada para sostener la masa del brazo
-        self.Kp_trans_left = np.diag([250.0, 250.0, 250.0])
-        self.Kd_trans_left = np.diag([14.0, 14.0, 14.0])
-        self.Kp_rot_left = np.diag([35.0, 35.0, 35.0])
-        self.Kd_rot_left = np.diag([4.0, 4.0, 4.0])
+        # Posturas nominales de referencia
+        self.q_nominal_left = np.array([0.0, 0.4, 0.0, 1.0, 0.0, 0.0, 0.0])
+        self.q_nominal_right = np.array([0.0, -0.4, 0.0, 1.0, 0.0, 0.0, 0.0])
 
-        self.Kp_trans_right = np.diag([480.0, 480.0, 480.0])
-        self.Kd_trans_right = np.diag([22.0, 22.0, 22.0])
-        self.Kp_rot_right = np.diag([65.0, 65.0, 65.0])
-        self.Kd_rot_right = np.diag([8.0, 8.0, 8.0])
+        # Rigidez y Amortiguamiento
+        self.Kp_trans_left = np.diag([600.0, 600.0, 600.0])
+        self.Kd_trans_left = np.diag([35.0, 35.0, 35.0])
+        self.Kp_rot_left   = np.diag([35.0, 35.0, 35.0])
+        self.Kd_rot_left   = np.diag([4.0, 4.0, 4.0])
 
-        # Obtención precisa de índices de velocidad en Pinocchio
+        self.Kp_trans_right = np.diag([450.0, 450.0, 450.0])
+        self.Kd_trans_right = np.diag([35.0, 35.0, 35.0])
+        self.Kp_rot_right   = np.diag([20.0, 20.0, 20.0])
+        self.Kd_rot_right   = np.diag([3.0, 3.0, 3.0])
+
+        # Obtención de índices de velocidad/articulaciones en Pinocchio
         self.left_arm_v_ids = [self.model.joints[self.model.getJointId(f"openarm_left_joint{i}")].idx_v for i in range(1, 8)]
         self.right_arm_v_ids = [self.model.joints[self.model.getJointId(f"openarm_right_joint{i}")].idx_v for i in range(1, 8)]
 
-    def compute_arm_torque(self, q_pin, dq_pin, frame_id, arm_v_ids, pos_d, vel_d, R_d, q_nominal=None, is_right_arm=True):
+    def compute_arm_torque(
+        self, q_pin, dq_pin, frame_id, arm_v_ids, pos_d, vel_d, R_d, 
+        q_nominal=None, is_right_arm=True, max_force_n=40.0, max_torque_nm=10.0, include_gravity=True
+    ):
         pin.forwardKinematics(self.model, self.data, q_pin, dq_pin)
         pin.updateFramePlacements(self.model, self.data)
 
@@ -44,20 +51,14 @@ class PinocchioImpedanceController:
         J = J_full[:, arm_v_ids]  # 6x7
 
         if is_right_arm:
-            Kp_trans = self.Kp_trans_right
-            Kd_trans = self.Kd_trans_right
-            Kp_rot = self.Kp_rot_right
-            Kd_rot = self.Kd_rot_right
+            Kp_trans, Kd_trans = self.Kp_trans_right, self.Kd_trans_right
+            Kp_rot, Kd_rot     = self.Kp_rot_right, self.Kd_rot_right
         else:
-            Kp_trans = self.Kp_trans_left
-            Kd_trans = self.Kd_trans_left
-            Kp_rot = self.Kp_rot_left
-            Kd_rot = self.Kd_rot_left
+            Kp_trans, Kd_trans = self.Kp_trans_left, self.Kd_trans_left
+            Kp_rot, Kd_rot     = self.Kp_rot_left, self.Kd_rot_left
 
-        # --- 1. ERRORES EN MARCO LOCAL DE LA HERRAMIENTA ---
+        # --- 1. ERRORES EN MARCO LOCAL ---
         e_pos_local = R.T @ (pos_d - pos)
-
-        # Error de rotación correcto en marco local
         R_err_local = R.T @ R_d
         e_rot_local = pin.log3(R_err_local)
 
@@ -72,48 +73,46 @@ class PinocchioImpedanceController:
 
         # --- 2. FUERZAS DE IMPEDANCIA LOCAL (Control PD) ---
         F_trans_local = Kp_trans @ e_pos_local + Kd_trans @ e_v_local
-        F_rot_local = Kp_rot @ e_rot_local + Kd_rot @ e_w_local
+        F_rot_local   = Kp_rot @ e_rot_local + Kd_rot @ e_w_local
+
+        # Acotar la fuerza/torque cartesiano para evitar aceleraciones descontroladas
+        if max_force_n is not None:
+            f_norm = np.linalg.norm(F_trans_local)
+            if f_norm > max_force_n:
+                F_trans_local = (F_trans_local / f_norm) * max_force_n
+
+        if max_torque_nm is not None:
+            t_norm = np.linalg.norm(F_rot_local)
+            if t_norm > max_torque_nm:
+                F_rot_local = (F_rot_local / t_norm) * max_torque_nm
 
         F_6d_world = np.hstack([R @ F_trans_local, R @ F_rot_local])
         tau_task = J.T @ F_6d_world
 
-        # --- 3. CONTROL EN EL ESPACIO NULO (Estabilización de 7-DOF) ---
-        # Proyector de espacio nulo: N = I - J^T * J^+T
+        # --- 3. ESPACIO NULO (Estabilización 7-DOF) ---
         J_pinv = np.linalg.pinv(J)
         N = np.eye(7) - J.T @ J_pinv.T
 
-        # Postura nominal por defecto (si no se proporciona, usa la actual)
         if q_nominal is None:
             q_nominal = q_arm
 
-        # Rigidez/Amortiguamiento articular secundario para eliminar la oscilación interna
-        Kp_null = 2.0 if is_right_arm else 1.0
+        Kp_null = 5.0 if is_right_arm else 3.0
         Kd_null = 0.8 if is_right_arm else 0.5
         tau_null_raw = Kp_null * (q_nominal - q_arm) - Kd_null * dq_arm
-
         tau_null = N @ tau_null_raw
 
-        return tau_task + tau_null
+        # --- 4. COMPENSACIÓN DE DINÁMICA / GRAVEDAD ---
+        tau_total = tau_task + tau_null
+        if include_gravity:
+            tau_gravity = self.compute_nonlinear_effects(q_pin, dq_pin)[arm_v_ids]
+            tau_total += tau_gravity
+
+        return tau_total
 
     def compute_nonlinear_effects(self, q_pin, dq_pin):
         return pin.nonLinearEffects(self.model, self.data, q_pin, dq_pin)
 
     def compute_gripper_torque(self, q_curr, dq_curr, q_d_init):
-        """
-        Mantiene los grippers fijados en su posición de spawn.
-        Ganas reducidas para evitar oscilaciones contra topes físicos.
-        """
-        Kp_grip = 10.0  # Rigidez suave
-        Kd_grip = 2.0   # Amortiguamiento proporcional
-        
+        Kp_grip = 10.0
+        Kd_grip = 2.0
         return Kp_grip * (q_d_init - q_curr) - Kd_grip * dq_curr
-
-    def compute_friction_compensation(self, dq_curr, v_ids, coulomb=0.1, damping=0.4):
-        """
-        Calcula la fricción estática (Coulomb) y viscosa (Damping) 
-        para anular la resistencia interna de MuJoCo.
-        """
-        dq_arm = dq_curr[v_ids]
-        #tau_fric = coulomb * np.sign(dq_arm) + damping * dq_arm
-        tau_fric = coulomb * np.tanh(10.0 * dq_arm) + damping * dq_arm
-        return tau_fric

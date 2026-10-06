@@ -28,7 +28,7 @@ setup(
     entry_points={
         'console_scripts': [
             'run_simulation = openarm_control.run_simulation:main',
-            'rviz_marker_node = openarm_control.rviz_marker_node:main',
+            'interactive_teleop_node = openarm_control.interactive_teleop_node:main',
         ],
     },
 )

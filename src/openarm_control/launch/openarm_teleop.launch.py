@@ -29,9 +29,9 @@ def generate_launch_description():
     )
 
     # 3. Nodo del Marcador Interactivo (tu archivo rviz_marker_node_3.py)
-    interactive_marker_node = Node(
+    interactive_teleop_node = Node(
         package='openarm_control',
-        executable='rviz_marker_node', # Nombre del ejecutable definido en tu setup.py o CMakeLists
+        executable='interactive_teleop_node', # Nombre del ejecutable definido en tu setup.py o CMakeLists
         name='arm_interactive_marker_node',
         output='screen'
     )
@@ -47,6 +47,6 @@ def generate_launch_description():
 
     return LaunchDescription([
         robot_state_publisher_node,
-        interactive_marker_node,
+        interactive_teleop_node,
         rviz_node
     ])
