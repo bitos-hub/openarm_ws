@@ -29,6 +29,7 @@ setup(
         'console_scripts': [
             'run_simulation = openarm_control.run_simulation:main',
             'interactive_teleop_node = openarm_control.interactive_teleop_node:main',
+            'gripper_cli = openarm_control.gripper_cli:main',
         ],
     },
 )

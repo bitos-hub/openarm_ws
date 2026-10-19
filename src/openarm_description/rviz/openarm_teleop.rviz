@@ -66,7 +66,107 @@ Visualization Manager:
         Expand Joint Details: false
         Expand Link Details: false
         Expand Tree: false
+        ForeArmStructure-Model_e18f2368:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        I-AP-R_d95d02d1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        I-FingerTipAssembly_ec49c16c:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        I-PP_bacbd481:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         Link Tree Style: Links in Alphabetic Order
+        M-AP_6ec59111:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        M-AP_e04a96f2:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        M-FingerTipAssembly_34afb748:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        M-FingerTipAssembly_424a8e75:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        M-PP_08efa608:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        M-PP_8660a1eb:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        P-AP_f5e42b61:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        P-FingerTipAssembly_cd219176:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        P-PP_1d411b9b:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        R-Carpals_8d1f1041:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        R-T-AP_a9723101:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        T-DP_b7429e50:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        T-PP_68395e98:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        T-TP-R_1c2b802d:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        TopTower-Model_4a80d30e:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        clarius_c3_hd3:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         openarm_body_link0:
           Alpha: 1
           Show Axes: false
@@ -130,11 +230,6 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        openarm_right_left_finger:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         openarm_right_link0:
           Alpha: 1
           Show Axes: false
@@ -175,11 +270,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        openarm_right_right_finger:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         world:
           Alpha: 1
           Show Axes: false
@@ -195,7 +285,7 @@ Visualization Manager:
     - Class: rviz_default_plugins/InteractiveMarkers
       Enable Transparency: true
       Enabled: true
-      Interactive Markers Namespace: /openarm_teleop_markers
+      Interactive Markers Namespace: /openarm_teleop
       Name: InteractiveMarkers
       Show Axes: false
       Show Descriptions: true

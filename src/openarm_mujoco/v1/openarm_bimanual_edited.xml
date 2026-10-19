@@ -16,12 +16,10 @@ limitations under the License.
 -->
 
 <mujoco model="openarm">
-  <!-- 1. Reducir el timestep y mejorar el integrador para control por torque -->
+  <!-- Time step and integrator for torque control -->
   <option timestep="0.001" integrator="RK4"/>
+
   <default>
-    <!-- <geom friction="0.0001" margin="0.0005" /> -->
-    
-    <!-- 2. Añadir 'armature' para simular la inercia del motor y evitar vibraciones instantáneas -->
     <joint stiffness="0" ref="0.0" armature="0.01"/>
     <default class="robot">
       <default class="motor_DM8009">
@@ -61,6 +59,7 @@ limitations under the License.
     <material name="white" rgba="0.9 0.9 0.9 1" />
     <material name="black" rgba="0.1 0.1 0.1 1" />
 
+    <!-- New assembly for the end efector -->
     <mesh name="ee_sub_assembly" file="collision/arm/EE_new_assembly_fixed.stl" scale="0.001 0.001 0.001" />
     
     <mesh name="right_I-R-Assembly" file="models/assets/right/I-R-Assembly.stl" scale="0.001 0.001 0.001" />
@@ -165,6 +164,12 @@ limitations under the License.
   </asset>
 
   <worldbody>
+    <!-- Human phantom -->
+    <body name="human_abdomen" pos="0.45 -0.20 0.18" euler="0 0 0">
+      <geom name="abdomen_geom" type="ellipsoid" size="0.18 0.14 0.08" 
+            rgba="0.85 0.60 0.50 0.85" condim="3" friction="0.8 0.01 0.01" 
+            solref="0.005 1" solimp="0.9 0.95 0.001" />
+    </body>
 
     <body name="openarm_body_link0" pos="0 0 0" quat="1.0 0.0 0.0 0.0">
       <inertial pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0" mass="13.89"
@@ -480,17 +485,21 @@ limitations under the License.
                       <geom name="openarm_right_link7_collision" pos="0.0 -0.0 -0.5585"
                         quat="1.0 0.0 0.0 0.0" type="mesh" mesh="link7_collision" class="collision" />
 
+                      <!-- New assembly for the end effector -->
                       <body name="openarm_right_ee_adapter" pos="0.0 0.0205 0.0" euler="3.14159 0 0">
                         <inertial pos="-0.000071 0.015593 -0.063782" mass="0.495764" 
                                   fullinertia="0.001042 0.0009723 0.0004083 0.00000015 0.00000050 0.000186" />
                         <geom name="openarm_right_ee_collision" pos="0 0 0" type="mesh" mesh="ee_sub_assembly" class="collision" />
                         <geom name="openarm_right_ee_visual" pos="0 0 0" type="mesh" mesh="ee_sub_assembly" material="metal_silver" class="visual" />
 
-                      </body>
+                        <!-- Measure points for the physical sensor -->
+                        <site name="force_measure_point" pos="0.001 0.0205 -0.0878" euler="0 0 0" size="0.005" rgba="1 0 0 1" type="sphere"/>
+                        <site name="torque_measure_point" pos="0.001 0.0205 -0.0621" euler="0 0 0" size="0.005" rgba="0 0 1 1" type="sphere"/>
 
-                      <!-- ACOPLAMIENTO CON TRASLACIÓN Y ROTACIÓN DEL URDF -->
-                      <body name="orcahand_mount" pos="-0.010 0.0 0.1538" euler="1.5708 3.14159 0">
-                        <include file="orcahand_right_body.xml"/>
+                        <!-- OrcaHand mount -->
+                        <body name="orcahand_mount" pos="-0.010 0.0205 -0.1538" euler="-1.5708 3.14159 0">
+                          <include file="orcahand_right_body.xml"/>
+                        </body>
                       </body>
                     </body>
                   </body>
@@ -540,7 +549,7 @@ limitations under the License.
     <motor name="right_joint6_ctrl" joint="openarm_right_joint6" class="motor_DM4310" />
     <motor name="right_joint7_ctrl" joint="openarm_right_joint7" class="motor_DM4310" />
 
-    <position name="right_wrist_actuator" joint="right_wrist" ctrlrange="-1.134 0.610" />
+    <position name="right_wrist_actuator" joint="right_wrist" ctrlrange="-1.134 0.610" forcelimited="true" forcerange="-3.43 3.43" kp="50" kv="2.0"/>
     <position name="right_p-abd_actuator" joint="right_p-abd" ctrlrange="-0.523 0.523" />
     <position name="right_p-mcp_actuator" joint="right_p-mcp" ctrlrange="-0.436 1.745" />
     <position name="right_p-pip_actuator" joint="right_p-pip" ctrlrange="-0.261 1.867" />
@@ -663,6 +672,10 @@ limitations under the License.
 		<exclude body1="right_T-TP-R_1c2b802d" body2="right_T-DP_b7429e50" />
 		<exclude body1="right_R-T-AP_a9723101" body2="right_T-DP_b7429e50" />
 		<exclude body1="right_T-PP_68395e98" body2="right_T-DP_b7429e50" />
+    <exclude body1="clarius_c3_hd3" body2="right_T-PP_68395e98" />
+    <exclude body1="clarius_c3_hd3" body2="right_T-DP_b7429e50" />
+    <exclude body1="clarius_c3_hd3" body2="right_I-PP_bacbd481" />
+    <exclude body1="clarius_c3_hd3" body2="right_I-FingerTipAssembly_ec49c16c" />
   </contact>
 
   <sensor>
@@ -671,5 +684,9 @@ limitations under the License.
     <framelinvel name="world_site_linvel" objtype="site" objname="world_site" />
     <frameangvel name="world_site_angvel" objtype="site" objname="world_site" />
     <velocimeter name="world_site_vel" site="world_site" />
+    <force name="contact_force_ee" site="force_measure_point"/>
+    <torque name="contact_torque_ee" site="torque_measure_point"/>
+    <force name="contact_force_tip" site="ultrasound_tip"/>
+    <torque name="contact_torque_tip" site="ultrasound_tip"/>
   </sensor>
 </mujoco>
