@@ -4,11 +4,9 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 
 def generate_launch_description():
-    # URDF file path
-    urdf_file = os.path.expanduser('~/openarm_ws/src/openarm_description/assets/robot/openarm_v1.0/urdf/example/v1_edited.urdf')
-    
-    # RViz configuration file path
+    # File paths
     desc_pkg = get_package_share_directory('openarm_description')
+    urdf_file = os.path.join(desc_pkg, 'assets', 'robot', 'openarm_v1.0', 'urdf', 'example', 'v1_edited.urdf')
     rviz_config_file = os.path.join(desc_pkg, 'rviz', 'openarm_teleop.rviz')
 
     # Read the URDF for robot_state_publisher

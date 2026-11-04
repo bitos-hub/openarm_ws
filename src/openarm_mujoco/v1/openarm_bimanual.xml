@@ -16,12 +16,9 @@ limitations under the License.
 -->
 
 <mujoco model="openarm">
-  <!-- 1. Reducir el timestep y mejorar el integrador para control por torque -->
   <option timestep="0.001" integrator="RK4"/>
   <default>
-    <!-- <geom friction="0.0001" margin="0.0005" /> -->
     
-    <!-- 2. Añadir 'armature' para simular la inercia del motor y evitar vibraciones instantáneas -->
     <joint stiffness="0" ref="0.0" armature="0.01"/>
     <default class="robot">
       <default class="motor_DM8009">
@@ -44,7 +41,6 @@ limitations under the License.
       <default class="collision">
         <geom material="collision_material" condim="3" conaffinity="1" priority="1" group="3"
           solref="0.005 1" friction="1 0.01 0.01" />
-        <!-- <material name="collision_material" rgba="1 0 0 0.5" specular="0.2" shininess="0.1"/> -->
         <equality solimp="0.99 0.999 1e-05" solref="0.005 1" />
       </default>
       <default class="visual">

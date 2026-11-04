@@ -1011,4 +1011,38 @@
     <child link="clarius_c3_hd3"/>
     <origin xyz="-0.0575 0.0381 0.0795" rpy="0 -1.5708 1.5708"/>
   </joint>
+  <link name="ultrasound_tip"/>
+  <joint name="ultrasound_tip_joint" type="fixed">
+    <parent link="clarius_c3_hd3"/>
+    <child link="ultrasound_tip"/>
+    <origin xyz="0 0 -0.055" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Human Abdominal Phantom-->
+  <material name="skin_tone">
+    <color rgba="0.85 0.60 0.50 0.85"/>
+  </material>
+
+  <link name="human_abdomen">
+    <visual name="abdomen_visual">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder length="0.02" radius="0.175"/>
+      </geometry>
+      <material name="skin_tone"/>
+    </visual>
+
+    <collision name="abdomen_collision">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder length="0.02" radius="0.175"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="human_abdomen_joint" type="fixed">
+    <parent link="world"/>
+    <child link="human_abdomen"/>
+    <origin xyz="0.44 0.0 0.3" rpy="0 0 0"/>
+  </joint>
 </robot>

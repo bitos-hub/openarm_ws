@@ -33,19 +33,25 @@ class MujocoRobotInterface:
             self.model.actuator_ctrlrange[self.left_finger2_act_id] = [-333.0, 333.0]
 
     def _get_joint_qpos_adr(self, name):
-        # Find the memory address of a joint in the position vector
+        """
+        Find the memory address of a joint in the position vector.
+        """
         j_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
         return self.model.jnt_qposadr[j_id] if j_id != -1 else None
 
     def _get_joint_adrs(self, name):
-        # Find the memory address of a joint in the position and velocity/force vector
+        """
+        Find the memory address of a joint in the position and velocity/force vector.
+        """
         j_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
         if j_id != -1:
             return self.model.jnt_qposadr[j_id], self.model.jnt_dofadr[j_id]
         return None, None
 
     def _get_actuator_id_by_joint(self, name):
-        # Get the actuator ID that matches a joint ID
+        """
+        Get the actuator ID that matches a joint ID.
+        """
         j_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
         if j_id != -1:
             for i in range(self.model.nu):
@@ -53,17 +59,28 @@ class MujocoRobotInterface:
                     return i
         return None
 
-    # Returns True while the 3D window is open
-    def is_running(self): return self.viewer.is_running()
+    def is_running(self): 
+        """
+        Returns True while the 3D window is open.
+        """
+        return self.viewer.is_running()
     
-    # Get the simulation time
-    def get_time(self): return time.time() - self.start_time 
+    def get_time(self): 
+        """
+        Get the simulation time.
+        """
+        return time.time() - self.start_time 
     
-    # Do the kinematics calculation
-    def update_kinematics(self): mujoco.mj_kinematics(self.model, self.data) 
+    def update_kinematics(self): 
+        """
+        Do the kinematics calculation.
+        """
+        mujoco.mj_kinematics(self.model, self.data) 
 
     def send_torques(self, tau_dict):
-        # Send torques to actuators
+        """
+        Send torques to actuators.
+        """
         for act_id, torque in tau_dict.items():
             if act_id is not None and 0 <= act_id < self.model.nu:
                 if self.model.actuator_ctrllimited[act_id]:
@@ -73,9 +90,15 @@ class MujocoRobotInterface:
                 self.data.ctrl[act_id] = torque
 
     def step(self):
-        # Execute a full physical integration step of the simulation
+        """
+        Execute a full physical integration step of the simulation.
+        """
         mujoco.mj_step(self.model, self.data)
         self.viewer.sync()
         time.sleep(self.model.opt.timestep)
 
-    def close(self): self.viewer.close()
+    def close(self): 
+        """
+        Close the 3D window
+        """
+        self.viewer.close()

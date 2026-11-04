@@ -1,31 +1,30 @@
 import os
+import time
+import signal
+import multiprocessing
 import numpy as np
 import mujoco
 import pinocchio as pin
 import rclpy
-import tf2_ros
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray, Float64
-from scipy.spatial.transform import Rotation as R_scipy, Slerp
+from std_msgs.msg import Float64MultiArray, Float64, Bool
+from scipy.spatial.transform import Rotation as R_scipy
+from scipy.spatial.transform import Slerp
+import matplotlib.pyplot as plt
 
-from openarm_control.impedance_controller import PinocchioImpedanceController
+from openarm_control.impedance_controller import BimanualCartesianController
 from openarm_control.robot_interface import MujocoRobotInterface
 from ament_index_python.packages import get_package_share_directory
 
-G_ACC           = 9.81  # m/s^2
+# Gravity
+G_ACC = 9.81
 
-MOTOR_LIMITS = {
-    'DM8009': 40.0,
-    'DM4340': 27.0,
-    'DM4310': 7.0
-}
-
-ARM_MOTOR_TYPES = ['DM8009', 'DM8009', 'DM4340', 'DM4340', 'DM4310', 'DM4310', 'DM4310']
+# Torque limits
 TORQUE_LIMITS = np.array([40.0, 40.0, 27.0, 27.0, 7.0, 7.0, 7.0])
 
-# Map MuJoCo joint names to URDF joint names
+# Mapping of MuJoCo to URDF joints
 MJ_TO_URDF_JOINTS = {
     'right_wrist': 'R-Carpals_8d1f1041_to_TopTower-Model_4a80d30e',
     'right_p-abd':  'P-AP_f5e42b61_to_R-Carpals_8d1f1041',
@@ -46,24 +45,109 @@ MJ_TO_URDF_JOINTS = {
     'right_t-pip':  'T-DP_b7429e50_to_T-PP_68395e98',
 }
 
-# Inverse mapping URDF -> MuJoCo
+# Mapping of URDF to MuJoCo joints
 URDF_TO_MJ_JOINTS = {v: k for k, v in MJ_TO_URDF_JOINTS.items()}
 
-def get_tip_direct_contact_force(model, data, clarius_body_id, tip_site_id):
-    # Measure the collision forces on the transducer
+def plot_force_exerted(t_data, f_target_data, f_calc_data, f_direct_data):
+    """
+    Plot the force exerted vs time.
+    """
+    # Restore default signal handling in the child process
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
     
-    # Default return if it does not find the transducer or its tip
+    #Plot configuration
+    plt.figure(figsize=(10, 5))
+    plt.plot(t_data, f_target_data, 'r--', linewidth=2.0, label='Desired Force $F_d$ [N]')
+    plt.plot(t_data, f_calc_data, 'b-', linewidth=1.8, label='Calculated Force (Wrist Sensor) [N]')
+    plt.plot(t_data, f_direct_data, 'g:', linewidth=1.2, alpha=0.7, label='Real Force in the Tip (Ground Truth) [N]')
+    plt.xlabel('Accumulated time in contact [s]', fontsize=11)
+    plt.ylabel('Normal Force $F_y$ [N]', fontsize=11)
+    plt.title('Temporal Admittance Controller Response in Contact', fontsize=12, fontweight='bold')
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.legend(loc='upper left', framealpha=0.9)
+    plt.tight_layout()
+
+    img_filename = "force_plot.png"
+    plt.savefig(img_filename, dpi=300)
+    print(f"\n[PLOTTING] Plot saved as: '{img_filename}'")
+    
+    try:
+        plt.show()
+    except Exception as e:
+        print(f"[PLOTTING] Error when opening the window: {e}")
+
+def compute_tcp_rotation_from_normal(normal_world, R_user=None):
+    """
+    Compute the TCP rotation matrix to align the Y-axis with the normal
+    vector of a surface.
+    """
+    # Asign the unit normal vector as the Y-axis
+    n = normal_world / np.linalg.norm(normal_world)
+    y_tcp = n
+    
+    # Get the user reference for the X-axis
+    if R_user is None:
+        R_user = np.eye(3)     
+    x_user = R_user[:, 0]
+
+    # Make the X_TCP perpendicular to Y_TCP
+    x_tcp = x_user - np.dot(x_user, y_tcp) * y_tcp
+    
+    # Singularity protection
+    if np.linalg.norm(x_tcp) < 1e-4:
+        x_user_alt = np.array([0.0, 0.0, 1.0]) if abs(y_tcp[0]) > 0.9 else np.array([1.0, 0.0, 0.0])
+        x_tcp = x_user_alt - np.dot(x_user_alt, y_tcp) * y_tcp
+        
+    # Normalize the X-axis and compute the Z-axis
+    x_tcp /= np.linalg.norm(x_tcp)
+    z_tcp = np.cross(x_tcp, y_tcp)
+    z_tcp /= np.linalg.norm(z_tcp)
+    
+    return np.column_stack((x_tcp, y_tcp, z_tcp))
+
+def get_abdomen_normal_and_contact(robot):
+    """
+    Detect the contact of the transducer with the phantom and get the
+    normal vector to the surface.
+    """
+    # Transducer and phantom IDs
+    transducer_geom_id = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_GEOM, "transducer_head")
+    abdomen_geom_id = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_GEOM, "abdomen_geom")
+    
+    # Initial values
+    in_contact = False
+    normal_world = np.array([0.0, 0.0, 1.0])
+
+    # Search for collisions
+    for i in range(robot.data.ncon):
+        c = robot.data.contact[i]
+        if (c.geom1 == transducer_geom_id and c.geom2 == abdomen_geom_id) or \
+           (c.geom2 == transducer_geom_id and c.geom1 == abdomen_geom_id):
+            # Update values
+            in_contact = True
+            normal_world = c.frame[:3].copy()
+            if c.geom1 == transducer_geom_id:
+                normal_world = -normal_world
+            break
+
+    return in_contact, normal_world
+
+def get_tip_direct_contact_force(model, data, clarius_body_id, tip_site_id):
+    """
+    Get the direct contact force measured on the transducer tip.
+    """
     if clarius_body_id == -1 or tip_site_id == -1:
         return 0.0
 
-    # Get the z-axis of the transducer
+    # Get the Z-axis in the world frame
     R_tip_world = data.site_xmat[tip_site_id].reshape(3, 3)
     n_tip_world = R_tip_world[:, 2] 
 
-    # Get the force in the z-axis
+    # Initial value
     f_tip_ext_world = np.zeros(3)
 
     for i in range(data.ncon):
+        # Identify the contact
         contact = data.contact[i]
         b1 = model.geom_bodyid[contact.geom1]
         b2 = model.geom_bodyid[contact.geom2]
@@ -72,6 +156,7 @@ def get_tip_direct_contact_force(model, data, clarius_body_id, tip_site_id):
         b2_is_tip = (b2 == clarius_body_id)
 
         if b1_is_tip != b2_is_tip:
+            # Get the wrench in the world frame
             c_wrench = np.zeros(6)
             mujoco.mj_contactForce(model, data, i, c_wrench)
             R_contact = contact.frame.reshape(3, 3)
@@ -81,7 +166,9 @@ def get_tip_direct_contact_force(model, data, clarius_body_id, tip_site_id):
     return max(0.0, float(np.dot(f_tip_ext_world, n_tip_world)))
 
 def get_subtree_body_ids(model, root_body_id):
-    # Get every body ID which belongs to a root body
+    """
+    Get a subtree body IDs.
+    """
     if root_body_id == -1:
         return set()
     subtree = {root_body_id}
@@ -90,13 +177,15 @@ def get_subtree_body_ids(model, root_body_id):
             subtree.add(b_id)
     return subtree
 
-
 def get_subtree_contact_wrench_world(model, data, subtree_body_ids, wrist_pos_world):
-    # Get the collision forces and torques actuating on the subtree
-    
+    """
+    Compute the wrench actuating on a subtree and translate it to the wrist.
+    """
+    # Initial values
     f_ext_world = np.zeros(3)
     tau_ext_world = np.zeros(3)
 
+    # Look for contacts
     for i in range(data.ncon):
         contact = data.contact[i]
         b1 = model.geom_bodyid[contact.geom1]
@@ -105,41 +194,46 @@ def get_subtree_contact_wrench_world(model, data, subtree_body_ids, wrist_pos_wo
         b2_in = b2 in subtree_body_ids
 
         if b1_in != b2_in:
+            # Get the wrench in the world frame
             c_wrench = np.zeros(6)
             mujoco.mj_contactForce(model, data, i, c_wrench)
-            
             R_contact = contact.frame.reshape(3, 3)
             f_world = (1.0 if b1_in else -1.0) * (R_contact @ c_wrench[:3])
             tau_world = (1.0 if b1_in else -1.0) * (R_contact @ c_wrench[3:])
 
+            # Translate it to the wrist
             r_contact_wrist = contact.pos - wrist_pos_world
-            
             f_ext_world += f_world
             tau_ext_world += tau_world + np.cross(r_contact_wrist, f_world)
 
     return f_ext_world, tau_ext_world
 
 def read_sensone_raw_wrench(model, data, ee_adapter_id, wrist_site_id, subtree_body_ids):
-    # Simulate measure made by the sensor
+    """
+    Simulate the sensor raw wrench measurement.
+    """
+    # Get position and rotation
     R_w_world = data.site_xmat[wrist_site_id].reshape(3, 3)
     p_w_world = data.site_xpos[wrist_site_id]
 
+    # Get wrench translated to the wrist
     f_ext_world, tau_ext_world = get_subtree_contact_wrench_world(
         model, data, subtree_body_ids, p_w_world
     )
 
+    # Transform the wrench to the wrist frame
     f_ext_w = R_w_world.T @ f_ext_world
     tau_ext_w = R_w_world.T @ tau_ext_world
 
+    # Include the gravity effect
     m_sub = float(model.body_subtreemass[ee_adapter_id])
     p_com_world = data.subtree_com[ee_adapter_id]
-
     g_world = np.array([0.0, 0.0, -G_ACC])
     f_grav_w = m_sub * (R_w_world.T @ g_world)
-
     r_com_w = R_w_world.T @ (p_com_world - p_w_world)
     tau_grav_w = np.cross(r_com_w, f_grav_w)
 
+    # Get the simulated measurement
     f_sensone_raw_w = f_ext_w + f_grav_w
     tau_sensone_raw_w = tau_ext_w + tau_grav_w
 
@@ -147,57 +241,74 @@ def read_sensone_raw_wrench(model, data, ee_adapter_id, wrist_site_id, subtree_b
 
 class RVizBridgeNode(Node):
     def __init__(self):
-        # Setup
         super().__init__('rviz_bridge_node')
+        # Initial values
         self.left_pose = None
         self.right_pose = None
         self.target_wrist_angle = 0.0
         self.target_gripper_pos = 0.035
+        self.contact_mode = False
+        self.target_force = 0.0
 
-        # Publishers of joint states and arms poses
+        # Publishers
         self.pub_js = self.create_publisher(JointState, '/joint_states', 10)
         self.pub_curr_l = self.create_publisher(PoseStamped, '/openarm/left/current_pose', 10)
         self.pub_curr_r = self.create_publisher(PoseStamped, '/openarm/right/current_pose', 10)
-
-        # Publishers of joint torques
         self.pub_torques_l = self.create_publisher(Float64MultiArray, '/openarm/left/joint_torques', 1)
         self.pub_torques_r = self.create_publisher(Float64MultiArray, '/openarm/right/joint_torques', 1)
-
-        # Publishers of forces in the transducer tip
         self.pub_force_tip = self.create_publisher(Float64, '/openarm/right/measured_force_tip_z', 10)
         self.pub_force_calc = self.create_publisher(Float64, '/openarm/right/calculated_force_tip_z', 10)
+        self.pub_contact_state = self.create_publisher(Bool, '/openarm/right/contact_mode', 10)
 
-        # Subscriptions to targets
+        # Subscribers
         self.create_subscription(PoseStamped, '/openarm/left/target_pose', self._cb_left, 10)
         self.create_subscription(PoseStamped, '/openarm/right/target_pose', self._cb_right, 10)
         self.create_subscription(Float64, '/openarm/right/wrist_cmd', self._cb_wrist, 10)
         self.create_subscription(Float64, '/openarm/left/gripper_cmd', self._cb_gripper, 10)
+        self.create_subscription(Float64, '/openarm/right/target_force', self._cb_force, 10)
+        self.create_subscription(Bool, '/openarm/right/contact_mode', self._cb_contact_mode, 10)
 
     def _cb_left(self, msg):
-        # Get left arm pose
+        """
+        Get the left TCP target pose.
+        """
         self.left_pose = msg.pose
-        self.on_marker_pose_updated('left', msg.pose)
 
     def _cb_right(self, msg):
-        # Get right arm pose
+        """
+        Get the right TCP target pose.
+        """
         self.right_pose = msg.pose
-        self.on_marker_pose_updated('right', msg.pose)
 
     def _cb_wrist(self, msg):
-        # Get wrist angle
+        """
+        Get the wrist target angle.
+        """
         self.target_wrist_angle = float(msg.data)
 
     def _cb_gripper(self, msg):
-        # Get gripper command
+        """
+        Get the gripper target pose.
+        """
         val = float(np.clip(msg.data, 0.0, 0.044))
         self.target_gripper_pos = val
 
-    def on_marker_pose_updated(self, arm_side, pose):
-        # Notify update of the target pose
-        self.get_logger().debug(f"New target pose received for the {arm_side} arm: {pose.position}")
+    def _cb_force(self, msg):
+        """
+        Get the target force.
+        """
+        self.target_force = float(max(0.0, msg.data))
+
+    def _cb_contact_mode(self, msg):
+        """
+        Get if the contact mode is active.
+        """
+        self.contact_mode = bool(msg.data)
 
     def publish_torques(self, tau_l, tau_r):
-        # Send torques for both arms
+        """
+        Publish the left and right torques.
+        """
         msg_l = Float64MultiArray()
         msg_l.data = [float(x) for x in tau_l]
         self.pub_torques_l.publish(msg_l)
@@ -207,7 +318,9 @@ class RVizBridgeNode(Node):
         self.pub_torques_r.publish(msg_r)
 
     def publish_forces(self, f_tip_direct, f_tip_calc):
-        # Send force on the transducer tip
+        """
+        Publish the ground truth and calculated forces, and the mode.
+        """
         msg_tip = Float64()
         msg_tip.data = float(f_tip_direct)
         self.pub_force_tip.publish(msg_tip)
@@ -216,9 +329,14 @@ class RVizBridgeNode(Node):
         msg_calc.data = float(f_tip_calc)
         self.pub_force_calc.publish(msg_calc)
 
+        msg_c = Bool()
+        msg_c.data = bool(self.contact_mode)
+        self.pub_contact_state.publish(msg_c)
+
     def publish_states(self, pos_l, R_l, pos_r, R_r, joint_names, q_vals):
-        # Publish joint states
-    
+        """
+        Publish the current state of the robot.
+        """
         now = self.get_clock().now().to_msg()
         
         js = JointState()
@@ -243,124 +361,90 @@ class RVizBridgeNode(Node):
         msg_r.pose.orientation.x, msg_r.pose.orientation.y, msg_r.pose.orientation.z, msg_r.pose.orientation.w = q_r
         self.pub_curr_r.publish(msg_r)
 
-def check_motor_overload(node, arm_name, torques):
-    # Check if the applied torques reach the motor limits
-    for i, tau in enumerate(torques):
-        m_type = ARM_MOTOR_TYPES[i]
-        limit = MOTOR_LIMITS[m_type]
-        if abs(tau) >= limit:
-            node.get_logger().warn(
-                f"OVERLOAD WARNING [{arm_name}] Joint {i+1} ({m_type}): "
-                f"Torque {tau:.2f} Nm exceeds threshold! (Max: {limit} Nm)"
-            )
-
-def check_collisions(node, robot, reported_contacts=set()):
-    # Detect collisions of bodies
-    for i in range(robot.data.ncon):
-        contact = robot.data.contact[i]
-        
-        b1_id = robot.model.geom_bodyid[contact.geom1]
-        b2_id = robot.model.geom_bodyid[contact.geom2]
-        
-        if b1_id != b2_id:
-            b1_name = mujoco.mj_id2name(robot.model, mujoco.mjtObj.mjOBJ_BODY, b1_id) or f"body_{b1_id}"
-            b2_name = mujoco.mj_id2name(robot.model, mujoco.mjtObj.mjOBJ_BODY, b2_id) or f"body_{b2_id}"
-            
-            pair = tuple(sorted([b1_name, b2_name]))
-            
-            if pair not in reported_contacts:
-                node.get_logger().warn(
-                    f"DETECTED COLLISION: <exclude body1=\"{pair[0]}\" body2=\"{pair[1]}\" />"
-                )
-                reported_contacts.add(pair)
-
 def main():
-    # Get file paths
+    # File paths
     pkg_path = get_package_share_directory('openarm_mujoco')
     xml_path = os.path.join(pkg_path, 'v1', 'openarm_bimanual_edited.xml')
-    urdf_path = os.path.expanduser("~/openarm_ws/src/openarm_description/assets/robot/openarm_v1.0/urdf/example/v1_edited.urdf")
+    desc_pkg_path = get_package_share_directory('openarm_description')
+    urdf_path = os.path.join(desc_pkg_path, 'assets', 'robot', 'openarm_v1.0', 'urdf', 'example', 'v1_edited.urdf')
     
-    # Setup
+    # Initialization
     rclpy.init()
     node = RVizBridgeNode()
     robot = MujocoRobotInterface(xml_path)
-    controller = PinocchioImpedanceController(
+    controller = BimanualCartesianController(
         urdf_path,
         left_ee_frame="openarm_left_hand_tcp",
         right_ee_frame="openarm_right_hand_tcp"
     )
     
     # Get IDs
-    wrist_sensor_id = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_SENSOR, "contact_force_ee")
     wrist_site_id   = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_SITE, "force_measure_point")
-
-    tip_sensor_id   = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_SENSOR, "contact_force_tip")
     tip_site_id     = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_SITE, "ultrasound_tip")
-
     clarius_body_id = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_BODY, "clarius_c3_hd3")
     ee_adapter_id   = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_BODY, "openarm_right_ee_adapter")
     subtree_body_ids = get_subtree_body_ids(robot.model, ee_adapter_id)
 
-    # Get the EE subtree mass
-    M_SUBTREE_SIM = float(robot.model.body_subtreemass[ee_adapter_id]) if ee_adapter_id != -1 else 2.137838
-
-    # Initial values
-    pos_init_l, R_init_l = None, None
-    pos_init_r, R_init_r = None, None
-    q_grip_left_d, q_grip_right_d = None, None
-    q_nominal_left, q_nominal_right = None, None
-
-    # Fixed finger poses
+    # Fixed angles for the fingers
     fixed_fingers = {
-        'right_r-mcp': 1.72,
-        'right_r-pip': 1.7,
-        'right_p-mcp': 1.72,
-        'right_p-pip': 1.5,
-        'right_m-mcp': 1.72,
-        'right_m-pip': 1.7,
-        'right_i-mcp': 1.4,
-        'right_i-pip': 1.3,
-        'right_t-cmc': -0.78,
-        'right_t-abd': 0.95,
-        'right_t-mcp': 0.1,
-        'right_t-pip': 0.5
+        'right_p-abd': 0.0,  'right_p-mcp': 1.72, 'right_p-pip': 1.5,
+        'right_r-abd': 0.0,  'right_r-mcp': 1.72, 'right_r-pip': 1.7,
+        'right_m-abd': 0.0,  'right_m-mcp': 1.72, 'right_m-pip': 1.7,
+        'right_i-abd': 0.0,  'right_i-mcp': 1.4,  'right_i-pip': 1.3,
+        'right_t-cmc': -0.78,'right_t-abd': 0.95, 'right_t-mcp': 0.1,  'right_t-pip': 0.5
     }
-    
-    # Initialize the gripper as open
+
+    # Initial pose for the gripper
     j_adr_g1 = robot._get_joint_qpos_adr('openarm_left_finger_joint1')
     j_adr_g2 = robot._get_joint_qpos_adr('openarm_left_finger_joint2')
     if j_adr_g1 is not None: robot.data.qpos[j_adr_g1] = 0.035
     if j_adr_g2 is not None: robot.data.qpos[j_adr_g2] = 0.035
 
-    # Initialize the wrist pose
+    # Initial pose for the wrist
     j_adr_w = robot._get_joint_qpos_adr('right_wrist')
-    if j_adr_w is not None:
-        robot.data.qpos[j_adr_w] = 0.0
+    if j_adr_w is not None: robot.data.qpos[j_adr_w] = 0.0
     for j_name, angle in fixed_fingers.items():
         j_adr = robot._get_joint_qpos_adr(j_name)
-        if j_adr is not None:
-            robot.data.qpos[j_adr] = angle
+        if j_adr is not None: robot.data.qpos[j_adr] = angle
 
+    # Get joint names
     all_joint_names = [controller.model.names[i] for i in range(1, len(controller.model.joints))]
 
-    # EMA Smoothness factor
-    alpha_pos = 0.25
-    alpha_rot = 0.25
+    # Alpha for the filter
+    alpha_pos = 0.35
+    alpha_rot = 0.35
 
-    # Initial target poses
+    # Initial desired poses
     pos_d_l, R_d_l = None, None
     pos_d_r, R_d_r = None, None
 
-    # Update kinematics
+    # Move a timestep forward
     mujoco.mj_forward(robot.model, robot.data)
+
+    # Initial values
+    q_pin = np.zeros(controller.model.nq)
+    dq_pin = np.zeros(controller.model.nv)
+    f_norm_calc_prev = 0.0
+    zero_force_counter = 0
+
+    # Simulation timestep
+    dt = robot.model.opt.timestep
+
+    # History of data
+    t_contact_list = []
+    f_target_list = []
+    f_calc_list = []
+    f_direct_list = []
+    contact_time_counter = 0.0
     
+    # Main loop
     try:
         while robot.is_running():
+            # Update kinematics
             rclpy.spin_once(node, timeout_sec=0.0)
             robot.update_kinematics()
 
-            # Wrist controller
-            
+            # Wrist control
             j_adr_w, v_adr_w = robot._get_joint_adrs('right_wrist')
             q_w_curr = robot.data.qpos[j_adr_w] if j_adr_w is not None else 0.0
             dq_w_curr = robot.data.qvel[v_adr_w] if v_adr_w is not None else 0.0
@@ -373,31 +457,18 @@ def main():
             if wrist_act_id != -1:
                 robot.data.ctrl[wrist_act_id] = wrist_cmd
 
-            # Fingers control
-
-            for j_name, angle in fixed_fingers.items():
-                actuator_name = j_name + "_actuator"
-                act_id = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name)
-                if act_id != -1:
-                    robot.data.ctrl[act_id] = angle
-
-            q_pin = np.zeros(controller.model.nq)
-            dq_pin = np.zeros(controller.model.nv)
-
+            # Synchronize the state from MuJoCo to Pinocchio
             for i in range(1, len(controller.model.joints)):
                 urdf_jname = controller.model.names[i]
                 mj_jname = URDF_TO_MJ_JOINTS.get(urdf_jname, urdf_jname)
-                
-                j_adr = robot._get_joint_qpos_adr(mj_jname)
-                if j_adr is not None:
-                    q_pin[controller.model.joints[i].idx_q] = robot.data.qpos[j_adr]
-                    dq_pin[controller.model.joints[i].idx_v] = robot.data.qvel[j_adr]
-
+                j_qadr, j_vadr = robot._get_joint_adrs(mj_jname)
+                if j_qadr is not None and j_vadr is not None:
+                    q_pin[controller.model.joints[i].idx_q] = robot.data.qpos[j_qadr]
+                    dq_pin[controller.model.joints[i].idx_v] = robot.data.qvel[j_vadr]
             pin.forwardKinematics(controller.model, controller.data, q_pin, dq_pin)
             pin.updateFramePlacements(controller.model, controller.data)
 
-            # Initial current hand poses
-
+            # Initialize desired poses
             if pos_d_l is None:
                 H_l = controller.data.oMf[controller.left_ee_id]
                 pos_d_l = H_l.translation.copy()
@@ -407,170 +478,185 @@ def main():
                 pos_d_r = H_r.translation.copy()
                 R_d_r = H_r.rotation.copy()
 
-            # Marker lecture with the EMA filter
+            # Filter for following the left arm
             if node.left_pose is not None:
+                # Desired position filtered
                 target_p = np.array([node.left_pose.position.x, node.left_pose.position.y, node.left_pose.position.z])
                 q_l = node.left_pose.orientation
-                
-                # EMA filtered position
                 pos_d_l = alpha_pos * target_p + (1.0 - alpha_pos) * pos_d_l
 
-                # Current and target quaternions
+                # Desired rotation filtered
                 q_curr = R_scipy.from_matrix(R_d_l).as_quat()
                 q_targ = np.array([q_l.x, q_l.y, q_l.z, q_l.w])
-
-                # Change the quaternion to take the shortest path if necessary
-                if np.dot(q_curr, q_targ) < 0.0:
-                    q_targ = -q_targ
-
-                rot_curr = R_scipy.from_quat(q_curr)
-                rot_targ = R_scipy.from_quat(q_targ)
-
+                if np.dot(q_curr, q_targ) < 0.0: q_targ = -q_targ
                 slerp = Slerp([0.0, 1.0], R_scipy.from_quat(np.vstack([q_curr, q_targ])))
                 R_d_l = slerp([alpha_rot])[0].as_matrix()
 
+            # State machine
+            if node.target_force > 0.0:
+                if not node.contact_mode and f_norm_calc_prev > 0.5:
+                    node.contact_mode = True
+                    zero_force_counter = 0
+                    node.get_logger().info("Contact established: Contact mode activated.")
+                elif node.contact_mode and f_norm_calc_prev < 0.1:
+                    zero_force_counter += 1
+                    if zero_force_counter > 300:
+                        node.contact_mode = False
+                        controller.reset_force_integral()
+                        node.get_logger().info("Contact lost: Contact mode deactivated.")
+                else:
+                    zero_force_counter = 0
+            else:
+                node.contact_mode = False
+                controller.reset_force_integral()
+
+            # Filter for following the right arm
             if node.right_pose is not None:
+                # Position desired filtered
                 target_p = np.array([node.right_pose.position.x, node.right_pose.position.y, node.right_pose.position.z])
-                q_r = node.right_pose.orientation
-                
-                # EMA filtered position
                 pos_d_r = alpha_pos * target_p + (1.0 - alpha_pos) * pos_d_r
 
-                # Current and target quaternions
+                # Rotation desired filtered (modified to normal to the surface if the contact mode is on)
+                q_r = node.right_pose.orientation
+                q_user = np.array([q_r.x, q_r.y, q_r.z, q_r.w])
+
+                if node.contact_mode:
+                    in_contact_geom, normal_world = get_abdomen_normal_and_contact(robot)
+                    R_user_marker = R_scipy.from_quat(q_user).as_matrix()
+                    R_d_r_auto = compute_tcp_rotation_from_normal(normal_world, R_user_marker)
+                    
+                    q_auto = R_scipy.from_matrix(R_d_r_auto).as_quat()
+                    if np.dot(q_user, q_auto) < 0.0: q_auto = -q_auto
+                    slerp_auto = Slerp([0.0, 1.0], R_scipy.from_quat(np.vstack([q_user, q_auto])))
+                    q_targ = slerp_auto([0.25])[0].as_quat()
+                else:
+                    q_targ = q_user
+
                 q_curr = R_scipy.from_matrix(R_d_r).as_quat()
-                q_targ = np.array([q_r.x, q_r.y, q_r.z, q_r.w])
-
-                # Change the quaternion to take the shortest path if necessary
-                if np.dot(q_curr, q_targ) < 0.0:
-                    q_targ = -q_targ
-
-                rot_curr = R_scipy.from_quat(q_curr)
-                rot_targ = R_scipy.from_quat(q_targ)
-
+                if np.dot(q_curr, q_targ) < 0.0: q_targ = -q_targ
                 slerp = Slerp([0.0, 1.0], R_scipy.from_quat(np.vstack([q_curr, q_targ])))
                 R_d_r = slerp([alpha_rot])[0].as_matrix()
 
-            # Current joints
-            q_arm_l_curr = q_pin[controller.left_arm_v_ids]
-            q_arm_r_curr = q_pin[controller.right_arm_v_ids]
-
-            # Calculate full torques
-            tau_l = controller.compute_arm_torque(
-                q_pin, dq_pin, controller.left_ee_id, controller.left_arm_v_ids,
-                pos_d_l, np.zeros(3), R_d_l, q_nominal=q_arm_l_curr, is_right_arm=False, include_gravity=True
-            )
-            tau_r = controller.compute_arm_torque(
-                q_pin, dq_pin, controller.right_ee_id, controller.right_arm_v_ids,
-                pos_d_r, np.zeros(3), R_d_r, q_nominal=q_arm_r_curr, is_right_arm=True, include_gravity=True
+            # Compute the torques for both arms
+            tau_l, tau_r = controller.compute_bimanual_torques(
+                q_pin=q_pin,
+                dq_pin=dq_pin,
+                pos_d_l=pos_d_l, R_d_l=R_d_l, vel_d_l=np.zeros(3),
+                pos_d_r=pos_d_r, R_d_r=R_d_r, vel_d_r=np.zeros(3),
+                contact_mode=node.contact_mode,
+                f_d=node.target_force,
+                f_measured=f_norm_calc_prev,
+                dt=dt
             )
 
-            # Clamp torques
+            # Clip torques according to the motor limits
             tau_l_clamped = np.clip(tau_l, -TORQUE_LIMITS, TORQUE_LIMITS)
             tau_r_clamped = np.clip(tau_r, -TORQUE_LIMITS, TORQUE_LIMITS)
 
-            # Assigned torques
+            # Assign torques
             cmd_dict = {}
             for idx, act_id in enumerate(robot.left_act_ids):
-                if act_id is not None:
-                    cmd_dict[act_id] = tau_l_clamped[idx]
-
+                if act_id is not None: cmd_dict[act_id] = tau_l_clamped[idx]
             for idx, act_id in enumerate(robot.right_act_ids):
-                if act_id is not None:
-                    cmd_dict[act_id] = tau_r_clamped[idx]
+                if act_id is not None: cmd_dict[act_id] = tau_r_clamped[idx]
 
-            # Control fingers in each step
+            # Keep the fingers fixed
             for j_name, angle in fixed_fingers.items():
                 actuator_name = j_name + "_actuator"
                 act_id = mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name)
-                
-                if act_id != -1:
-                    robot.data.ctrl[act_id] = angle
+                if act_id != -1: cmd_dict[act_id] = angle
 
             # Gripper control
             j_adr_g1, v_adr_g1 = robot._get_joint_adrs('openarm_left_finger_joint1')
             q_g_curr = robot.data.qpos[j_adr_g1] if j_adr_g1 is not None else 0.035
             dq_g_curr = robot.data.qvel[v_adr_g1] if v_adr_g1 is not None else 0.0
-
             tau_gripper = controller.compute_gripper_torque(q_g_curr, dq_g_curr, node.target_gripper_pos)
 
-            if robot.left_finger_act_id is not None:
-                cmd_dict[robot.left_finger_act_id] = tau_gripper
-            if robot.left_finger2_act_id is not None:
-                cmd_dict[robot.left_finger2_act_id] = tau_gripper
+            if robot.left_finger_act_id is not None: cmd_dict[robot.left_finger_act_id] = tau_gripper
+            if robot.left_finger2_act_id is not None: cmd_dict[robot.left_finger2_act_id] = tau_gripper
 
-            # Send torques and take a step in the simulation
+            # Send the torques and take a step in the simulation
             robot.send_torques(cmd_dict)
             robot.step()
 
-            # Force in the sensor and the transducer tip
-
-            # Initial values
-            f_norm_direct, f_norm_calc = 0.0, 0.0
-
-            # Ground truth value
+            # Direct force measurement
             f_norm_direct = get_tip_direct_contact_force(
                 robot.model, robot.data, clarius_body_id, tip_site_id
             )
 
-            # Simulation of sensor and transformation to the tip
+            # Calculated force measurement (sensor simulation)
+            f_norm_calc = 0.0
             if ee_adapter_id != -1 and wrist_site_id != -1 and tip_site_id != -1:
-                # Raw measure
                 f_raw_w, tau_raw_w = read_sensone_raw_wrench(
                     robot.model, robot.data, ee_adapter_id, wrist_site_id, subtree_body_ids
                 )
-
-                # Gravity compensation and transformation
 
                 R_w_world = robot.data.site_xmat[wrist_site_id].reshape(3, 3)
                 p_w_world = robot.data.site_xpos[wrist_site_id]
                 R_t_world = robot.data.site_xmat[tip_site_id].reshape(3, 3)
                 p_t_world = robot.data.site_xpos[tip_site_id]
 
+                # Gravity compensation
                 m_sub = float(robot.model.body_subtreemass[ee_adapter_id])
                 p_com_world = robot.data.subtree_com[ee_adapter_id]
                 r_com_w = R_w_world.T @ (p_com_world - p_w_world)
-
                 g_w = R_w_world.T @ np.array([0.0, 0.0, -G_ACC])
                 f_grav_w = m_sub * g_w
-                tau_grav_w = np.cross(r_com_w, f_grav_w)
-
-                # Substract the gravity effect
                 f_ext_w = f_raw_w - f_grav_w
-                tau_ext_w = tau_raw_w - tau_grav_w
-
-                # Translation to the tip
                 R_t_w = R_t_world.T @ R_w_world
-                r_tip_w = R_w_world.T @ (p_t_world - p_w_world)
-
                 f_ext_t = R_t_w @ f_ext_w
-                tau_ext_t = R_t_w @ (tau_ext_w - np.cross(r_tip_w, f_ext_w))
 
-                # Z-axis projection
                 n_tip_local = np.array([0.0, 0.0, 1.0])
                 f_norm_calc = max(0.0, float(np.dot(f_ext_t, n_tip_local)))
 
-            # Publish the forces
+            f_norm_calc_prev = f_norm_calc
+
+            # Sample contact forces
+            if node.contact_mode or node.target_force > 0.0 or f_norm_calc > 0.1:
+                contact_time_counter += dt
+                t_contact_list.append(contact_time_counter)
+                f_target_list.append(node.target_force)
+                f_calc_list.append(f_norm_calc)
+                f_direct_list.append(f_norm_direct)
+
+            # Publish forces
             node.publish_forces(f_norm_direct, f_norm_calc)
+
+            # Logger
             node.get_logger().info(
-                f"[TELEOP CONTACT] Ground Truth: {f_norm_direct:.2f} N | Sensor: {f_norm_calc:.2f} N | Error: {abs(f_norm_calc - f_norm_direct):.3f} N",
+                f"[IMPEDANCE HYBRID] Mode: {'CONTACT' if node.contact_mode else 'FLIGHT'} | Force Target: {node.target_force:.1f} N | Ground Truth: {f_norm_direct:.2f} N | Sensor: {f_norm_calc:.2f} N",
                 throttle_duration_sec=0.2
             )
-
-            # Check problems
-            check_collisions(node, robot)
-            check_motor_overload(node, "LEFT", tau_l_clamped)
-            check_motor_overload(node, "RIGHT", tau_r_clamped)
 
             # Publish torques
             node.publish_torques(tau_l_clamped, tau_r_clamped)
 
-            # Publish states to RViz
+            # Publish states
             q_list = [float(q_pin[controller.model.joints[i].idx_q]) for i in range(1, len(controller.model.joints))]
             node.publish_states(pos_d_l, R_d_l, pos_d_r, R_d_r, all_joint_names, np.array(q_list, dtype=np.float64))
 
+    except KeyboardInterrupt:
+        print("\n[INFO] Closing MuJoCo...")
     finally:
         robot.close()
-        rclpy.shutdown()
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass
+
+    # Plot
+    if len(t_contact_list) > 0:
+        print(f"\n[PLOTTING] Opening plot with {len(t_contact_list)} samples...")
+        p = multiprocessing.Process(
+            target=plot_force_exerted,
+            args=(list(t_contact_list), list(f_target_list), list(f_calc_list), list(f_direct_list))
+        )
+        p.start()
+        p.join()
+    else:
+        print("[INFO] No samples available.")
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method('spawn', force=True)
     main()
