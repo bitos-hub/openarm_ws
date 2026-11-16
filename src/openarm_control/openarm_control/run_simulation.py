@@ -12,6 +12,8 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, Float64, Bool
 from scipy.spatial.transform import Rotation as R_scipy
 from scipy.spatial.transform import Slerp
+from scipy.signal import butter, filtfilt
+from scipy.ndimage import median_filter
 import matplotlib.pyplot as plt
 
 from openarm_control.impedance_controller import BimanualCartesianController
@@ -48,29 +50,71 @@ MJ_TO_URDF_JOINTS = {
 # Mapping of URDF to MuJoCo joints
 URDF_TO_MJ_JOINTS = {v: k for k, v in MJ_TO_URDF_JOINTS.items()}
 
+def filter_force_signal(signal_data, dt, median_window_sec=0.04, cutoff_hz=6.0):
+    """
+    Apply filters for the plot
+    """
+    arr = np.asarray(signal_data, dtype=float)
+    if len(arr) < 15 or dt <= 0:
+        return arr
+
+    # Median filter
+    win_size = max(3, int(round(median_window_sec / dt)))
+    if win_size % 2 == 0:
+        win_size += 1
+    arr_med = median_filter(arr, size=win_size, mode='nearest')
+
+    # Butterworth low-pass filter
+    fs = 1.0 / dt
+    nyq = 0.5 * fs
+    if cutoff_hz < nyq:
+        b, a = butter(N=3, Wn=cutoff_hz / nyq, btype='low')
+        padlen = min(len(arr_med) - 1, 3 * max(len(a), len(b)))
+        arr_smooth = filtfilt(b, a, arr_med, padlen=padlen)
+        return np.maximum(0.0, arr_smooth)
+
+    return arr_med
+
 def plot_force_exerted(t_data, f_target_data, f_calc_data, f_direct_data):
     """
-    Plot the force exerted vs time.
+    Plot the filtered force exerted vs time and save raw data.
     """
     # Restore default signal handling in the child process
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-    
-    #Plot configuration
+
+    t_arr = np.asarray(t_data, dtype=float)
+    dt = float(np.median(np.diff(t_arr))) if len(t_arr) > 1 else 0.002
+
+    # Save raw data in a CSV
+    raw_data = np.column_stack((t_arr, f_target_data, f_calc_data, f_direct_data))
+    np.savetxt(
+        "force_data_raw_3.csv",
+        raw_data,
+        delimiter=",",
+        header="time_s,f_target_N,f_calc_wrist_N,f_direct_tip_N",
+        comments=""
+    )
+
+    # Filters
+    f_calc_filt = filter_force_signal(f_calc_data, dt, median_window_sec=0.04, cutoff_hz=6.0)
+    f_direct_filt = filter_force_signal(f_direct_data, dt, median_window_sec=0.04, cutoff_hz=6.0)
+
+    # Plot configuration
     plt.figure(figsize=(10, 5))
-    plt.plot(t_data, f_target_data, 'r--', linewidth=2.0, label='Desired Force $F_d$ [N]')
-    plt.plot(t_data, f_calc_data, 'b-', linewidth=1.8, label='Calculated Force (Wrist Sensor) [N]')
-    plt.plot(t_data, f_direct_data, 'g:', linewidth=1.2, alpha=0.7, label='Real Force in the Tip (Ground Truth) [N]')
+    plt.plot(t_arr, f_target_data, 'r--', linewidth=2.0, label='Desired Force $F_d$ [N]')
+    plt.plot(t_arr, f_calc_filt, 'b-', linewidth=1.8, label='Calculated Force (Wrist Sensor) [N]')
+    plt.plot(t_arr, f_direct_filt, 'g-.', linewidth=1.6, alpha=0.85, label='Real Force in the Tip (Ground Truth) [N]')
     plt.xlabel('Accumulated time in contact [s]', fontsize=11)
     plt.ylabel('Normal Force $F_y$ [N]', fontsize=11)
     plt.title('Temporal Admittance Controller Response in Contact', fontsize=12, fontweight='bold')
+    plt.ylim(bottom=-0.5)
     plt.grid(True, linestyle=':', alpha=0.6)
     plt.legend(loc='upper left', framealpha=0.9)
     plt.tight_layout()
-
-    img_filename = "force_plot.png"
+    img_filename = "force_plot_3.png"
     plt.savefig(img_filename, dpi=300)
-    print(f"\n[PLOTTING] Plot saved as: '{img_filename}'")
-    
+    print(f"\n[PLOTTING] Plot saved as: '{img_filename}' (Raw data saved to 'force_data_raw.csv')")
+
     try:
         plt.show()
     except Exception as e:
@@ -611,8 +655,8 @@ def main():
 
             f_norm_calc_prev = f_norm_calc
 
-            # Sample contact forces
-            if node.contact_mode or node.target_force > 0.0 or f_norm_calc > 0.1:
+            # Sample contact forces only when contact mode is active
+            if node.contact_mode:
                 contact_time_counter += dt
                 t_contact_list.append(contact_time_counter)
                 f_target_list.append(node.target_force)

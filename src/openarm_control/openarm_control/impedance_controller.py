@@ -37,7 +37,7 @@ class BimanualCartesianController:
         self.Kd_null_vec = np.array([0.5, 0.5, 0.5, 1.0, 0.3, 0.3, 0.2])
         self.q4_target_elbow = 0.8 # Around 45°
         self.damping_lambda_sq = 1e-3
-        self.max_force_n = 30.0
+        self.max_force_n = 40.0
         self.max_torque_nm = 10.0
 
         # Force admittance
