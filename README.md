@@ -24,7 +24,7 @@ openarm_ws/
 │   ├── openarm_can/              # Interfaz de comunicación por bus CAN para actuadores
 │   ├── openarm_control/          # Controlador híbrido, teleoperación y simulación
 │   │   ├── gripper_cli.py            # Interfaz CLI para accionamiento de efectores
-│   │   ├── impedance_controller.py       # Controlador
+│   │   ├── impedance_controller.py   # Controlador
 │   │   ├── interactive_teleop_node.py# Nodo ROS 2 de teleoperación interactiva
 │   │   ├── plot_errors.py            # Cáluclo de errores de las gráficas
 │   │   ├── robot_interface.py        # Abstracción de estados, cinemática y comandos del robot
